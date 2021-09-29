@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"log"
 	"os"
 
 	"github.com/jackc/pgtype"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 /*
@@ -20,14 +20,52 @@ create type resolution as (
 
 create table foo (id int primary key, res resolution);
 insert into foo values (1, (10, 10, 'P'));
+insert into foo values (2, null);
+insert into foo values (3, (-10, 10, 'P'));
+insert into foo values (4, (10, 10, null));
+
 select * from foo;
 */
 
 // Resolution is a custom type defined in postgres.  We want to map it to
-// a struct in Go.
+// a struct in Go.  Except... we might need to handle nulls.  In which case
+// we'll go through a data transfer object (DTO).
 type Resolution struct {
 	Width, Height int
 	Scan          rune
+}
+
+// This has nullable fields where deal with the database possibly returning
+// null.  If you can guarantee the fields will not be null, then you don't
+// need the DTO and you would just have the type above.
+type resolutionDTO struct {
+	Width, Height *int
+	Scan          *rune
+}
+
+// AsResolution converts the DTO with its nulls into a semantically valid application type.
+func (rdto resolutionDTO) AsResolution() Resolution {
+	var result Resolution
+
+	if rdto.Width == nil {
+		result.Width = 0
+	} else {
+		result.Width = *rdto.Width
+	}
+
+	if rdto.Height == nil {
+		result.Height = 0
+	} else {
+		result.Height = *rdto.Height
+	}
+
+	if rdto.Scan == nil {
+		result.Scan = 'P'
+	} else {
+		result.Scan = *rdto.Scan
+	}
+
+	return result
 }
 
 // String to produce a human readable resolution.
@@ -96,11 +134,19 @@ func main() {
 	defer rows.Close()
 
 	for rows.Next() {
-		var some Resolution
+		// This is a pointer to the DTO - because our value might be null, in
+		// which case, `some` would be set to nil.  If you can guarantee the
+		// fields in the resulting object will never be null, you can use a
+		// pointer to the Resolution type instead of the DTO.
+		var some *resolutionDTO
 		if err := rows.Scan(&some); err != nil {
 			log.Printf("Failed to scan: %v", err)
 		} else {
-			log.Printf("Got %v", some)
+			if some != nil {
+				log.Printf("Got %v", some.AsResolution())
+			} else {
+				log.Printf("No defined resolution")
+			}
 		}
 	}
 }
